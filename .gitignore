@@ -1,0 +1,67 @@
+# Dependencies
+**/node_modules
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+*.dist
+
+# Environment variables and local secrets
+.env
+.env.*
+!.env.example
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs and runtime data
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+pids
+*.pid
+*.pid.lock
+*.tsbuildinfo
+.eslintcache
+.node_repl_history
+*.tgz
+
+# Local build and tool caches
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+coverage/
+*.lcov
+
+# Uploaded files, database dumps and backups (never publish real data)
+uploads/
+backups/
+*.bak
+*.db
+*.sqlite
+*.sqlite3
+*.zip
+*.sql
+!sql/*.sql
+
+# Local tooling artefacts
+.webdev/
+.manus-logs/

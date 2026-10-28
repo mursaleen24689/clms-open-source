@@ -1,0 +1,27 @@
+diff --git a/src/index.js b/src/index.js
+index 0000000..0000000 100644
+--- a/src/index.js
++++ b/src/index.js
+@@ -328,6 +328,23 @@ export const Switch = ({ children, location }) => {
+   const router = useRouter();
+   const [originalLocation] = useLocationFromRouter(router);
+ 
++  // Collect all route paths to window object
++  if (typeof window !== 'undefined') {
++    if (!window.__WOUTER_ROUTES__) {
++      window.__WOUTER_ROUTES__ = [];
++    }
++
++    const allChildren = flattenChildren(children);
++    allChildren.forEach((element) => {
++      if (isValidElement(element) && element.props.path) {
++        const path = element.props.path;
++        if (!window.__WOUTER_ROUTES__.includes(path)) {
++          window.__WOUTER_ROUTES__.push(path);
++        }
++      }
++    });
++  }
++
+   for (const element of flattenChildren(children)) {
+     let match = 0;
