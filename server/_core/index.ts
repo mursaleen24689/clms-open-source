@@ -91,8 +91,8 @@ const getClientIp = (req: express.Request) => {
 // TRUSTED_PROXY_HOPS in `.env` to the number of proxy hops between the browser
 // and Node (1 for a single proxy on the same machine, 2 for e.g. CDN + proxy).
 // Never set it to `true`: that trusts whatever the client claims and is a
-// trivial way around IP-based rate limiting - express-rate-limit refuses to run
-// in that mode as well.
+// trivial way around IP-based rate limiting - express-rate-limit reports
+// ERR_ERL_PERMISSIVE_TRUST_PROXY on the console in that mode as well.
 const configureTrustProxy = (app: express.Express) => {
   const raw = (process.env.TRUSTED_PROXY_HOPS ?? "").trim();
   if (!raw) return; // direct LAN deployment: the socket address is the client

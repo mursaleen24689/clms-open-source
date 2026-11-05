@@ -27,9 +27,12 @@ import rateLimit from "express-rate-limit";
  *      user on campus shares one bucket and one person's mistake blocks the
  *      whole building. Set it too permissively (`trust proxy: true`) and the
  *      header is attacker-controlled, so each request can ask for a fresh
- *      bucket. express-rate-limit detects both and complains at startup: it
- *      refuses to run with `trust proxy: true` and warns when it sees the
- *      header while Express is configured to ignore it.
+ *      bucket. express-rate-limit notices both mistakes and writes the reason to
+ *      the server console for each affected request
+ *      (`ERR_ERL_PERMISSIVE_TRUST_PROXY` and
+ *      `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR`), so a wrong deployment is visible
+ *      instead of silently mis-counting - the requests still go through, which
+ *      is exactly why the setting has to be checked by hand.
  *   2. Do not build the key out of anything a client can vary per request (the
  *      raw `X-Forwarded-For` string, the user agent, a query parameter, a
  *      session id). That splits one person across many buckets, which is the
