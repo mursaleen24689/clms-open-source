@@ -12,7 +12,7 @@ overrides:
 
 patchedDependencies:
   wouter@3.9.0:
-    hash: 308f319a497927754e64507a7c92e4e736e25d0510194fc0bb486f597af49fd6
+    hash: f3fcf1d44e3cbdcc3c45f5887a6823061aa9e57332804c1f041ed490dd8711e2
     path: patches/wouter@3.9.0.patch
 
 importers:
@@ -148,6 +148,9 @@ importers:
       express:
         specifier: ^4.21.2
         version: 4.22.1
+      express-rate-limit:
+        specifier: ^8.7.3
+        version: 8.7.3(express@4.22.1)
       framer-motion:
         specifier: ^12.23.22
         version: 12.38.0(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
@@ -216,7 +219,7 @@ importers:
         version: 1.1.2(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       wouter:
         specifier: ^3.3.5
-        version: 3.9.0(patch_hash=308f319a497927754e64507a7c92e4e736e25d0510194fc0bb486f597af49fd6)(react@19.2.5)
+        version: 3.9.0(patch_hash=f3fcf1d44e3cbdcc3c45f5887a6823061aa9e57332804c1f041ed490dd8711e2)(react@19.2.5)
       zod:
         specifier: ^4.1.12
         version: 4.6.7
@@ -2099,6 +2102,12 @@ packages:
     resolution: {integrity: sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==}
     engines: {node: '>=12.0.0'}
 
+  express-rate-limit@8.7.3:
+    resolution: {integrity: sha512-zPLqDI2f0gV2WmGnacLf9XSSqn4VldRyP5LCzOwx0BKH40mO6+2PCFkoSsRO2jePx87/Kf6NUF6P2QOTKXHbQA==}
+    engines: {node: '>= 16'}
+    peerDependencies:
+      express: '>= 4.11'
+
   express@4.22.1:
     resolution: {integrity: sha512-F2X8g9P1X7uCPZMA3MVf9wcTqlyNp7IhH5qPCI0izhaOIYXaW9L535tGA3qmjRzpH+bZczqq7hVKxTR4NWnu+g==}
     engines: {node: '>= 0.10.0'}
@@ -2271,6 +2280,10 @@ packages:
   internmap@2.0.3:
     resolution: {integrity: sha512-5Hh7Y1wQbvY5ooGgPbDaL5iYLAPzMTUrjMulskHLH6wnv/A+1q5rgEaiuqEjB+oxGXIVZs1FF+R/KPN3ZSQYYg==}
     engines: {node: '>=12'}
+
+  ip-address@10.7.6:
+    resolution: {integrity: sha512-00LYkM6byILa9eQIx6qoaXCM40xTLd56AZ4vyaPW3YTyb49VZYPo5xsiAq4tuQ54GH4R7gVdYScJ1B7B77PuTg==}
+    engines: {node: '>= 12'}
 
   ipaddr.js@1.9.1:
     resolution: {integrity: sha512-0KI/607xoxSToH7GjN1FfSbLoU0+btTicjsQSWQlh/hZykN8KpmMf7uYwPW3R+akZ6R/w18ZlXSHBYXiYUPO3g==}
@@ -4871,6 +4884,14 @@ snapshots:
 
   expect-type@1.4.0: {}
 
+  express-rate-limit@8.7.3(express@4.22.1):
+    dependencies:
+      debug: 4.4.3
+      express: 4.22.1
+      ip-address: 10.7.6
+    transitivePeerDependencies:
+      - supports-color
+
   express@4.22.1:
     dependencies:
       accepts: 1.3.8
@@ -5117,6 +5138,8 @@ snapshots:
       react-dom: 19.2.5(react@19.2.5)
 
   internmap@2.0.3: {}
+
+  ip-address@10.7.6: {}
 
   ipaddr.js@1.9.1: {}
 
@@ -6267,7 +6290,7 @@ snapshots:
 
   why-is-node-running@3.2.1: {}
 
-  wouter@3.9.0(patch_hash=308f319a497927754e64507a7c92e4e736e25d0510194fc0bb486f597af49fd6)(react@19.2.5):
+  wouter@3.9.0(patch_hash=f3fcf1d44e3cbdcc3c45f5887a6823061aa9e57332804c1f041ed490dd8711e2)(react@19.2.5):
     dependencies:
       mitt: 3.0.1
       react: 19.2.5

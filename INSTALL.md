@@ -59,6 +59,8 @@ Edit `.env`:
 - `SEED_DEFAULT_PASSWORD` – any temporary password of 12 characters or more.
 - `ALLOWED_IP_PREFIXES` – optional. When set, only addresses starting with one of the listed
   prefixes may use the API. When empty, every address that can reach the server is accepted.
+- `TRUSTED_PROXY_HOPS` – optional, and only needed when a reverse proxy runs in front of
+  Node. See [Rate limiting](#rate-limiting) below.
 
 Set `MYSQLDUMP_PATH` when the `mysqldump` program is not on the system path (for example
 `C:/xampp/mysql/bin/mysqldump.exe`). Keep `.env` out of version control and back it up
@@ -113,6 +115,29 @@ crash or reboot:
   `node dist/index.js`, working folder the repository root.
 - Linux: `systemd` unit running `node dist/index.js` with `Restart=always`.
 
+## Rate limiting
+
+The API answers with HTTP 429 and a short message in `error` when a computer
+exceeds its allowance, and the standard `RateLimit-*` plus `Retry-After`
+headers say how long to wait. The limits live in
+`server/_core/rateLimits.ts`: 600 requests a minute for everything under `/api`,
+300 a minute for the ordinary record reads, and much smaller budgets for the
+routes that are expensive or worth abusing (10 rejected sign-ins per 15 minutes,
+5 password requests per hour, 30 uploads per 10 minutes, 30 wide reports per
+minute). They count per client address, never per account, and they are a
+backstop against scripts and runaway refresh loops - normal office use does not
+come close to them.
+
+**If a browser proxy sits in front of Node, set `TRUSTED_PROXY_HOPS` in `.env`**
+to the number of proxy hops (1 for nginx or IIS ARR on the same machine, 2 if a
+CDN is in front of that). Without it the server only ever sees the proxy's own
+address, so the whole building shares one allowance and one person's repeated
+429 blocks everybody else; the startup log then prints
+`Reverse proxy mode: trusting N hop(s)`. Leave it empty when staff connect
+straight to `http://<server-ip>:3000`, which is the arrangement described in
+this guide - setting it while no proxy is present would let a client choose its
+own recorded address. Never set it to `true`.
+
 ## Backups
 
 The server writes a database dump into `backups/` shortly after startup and then once a day
@@ -145,6 +170,7 @@ If `drizzle/schema.ts` changed, run `pnpm db:push` after taking a backup.
 | `ER_ACCESS_DENIED_ERROR` | Database user, password or host in `DATABASE_URL` |
 | `Access blocked: this server only accepts connections...` | `ALLOWED_IP_PREFIXES` does not include the client address |
 | Login page loads but every call returns 403 | Same as above; clear the setting to disable filtering |
+| `Too many requests ...` (HTTP 429) on one workstation only | That machine really is looping; if it happens to everyone at once, a proxy is in front of Node and `TRUSTED_PROXY_HOPS` is missing |
 | Blank page after `pnpm build` | Run `pnpm build` again; the client output must be in `dist/public` |
 | Forgot the administrator password | `pnpm emergency-reset admin "new-password-12+"` |
 

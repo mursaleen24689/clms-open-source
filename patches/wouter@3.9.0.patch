@@ -2,7 +2,7 @@ diff --git a/src/index.js b/src/index.js
 index 0000000..0000000 100644
 --- a/src/index.js
 +++ b/src/index.js
-@@ -328,6 +328,23 @@ export const Switch = ({ children, location }) => {
+@@ -329,5 +329,22 @@ export const Switch = ({ children, location }) => {
    const router = useRouter();
    const [originalLocation] = useLocationFromRouter(router);
  

@@ -29,6 +29,11 @@ This application is designed for a trusted local network. Before using it with r
 - Use a dedicated database account with rights on this database only.
 - Restrict access with `ALLOWED_IP_PREFIXES` when the server should be reachable only from
   specific subnets.
+- Set `TRUSTED_PROXY_HOPS` to the number of reverse-proxy hops when a proxy (nginx, Caddy,
+  IIS ARR) runs in front of Node. The request limits below count per client address, and
+  without that setting every user arrives as the proxy's address and shares one allowance.
+  Never enable Express's permissive `trust proxy: true`, which lets a caller choose the
+  address the limits are keyed on.
 - Change the seeded example accounts or delete the ones you do not need.
 - Keep Node.js, pnpm and MySQL patched; run `pnpm install` after pulling updates.
 - Back up the database, `.env` and `uploads/` regularly, and store the backups encrypted and
@@ -40,6 +45,9 @@ This application is designed for a trusted local network. Before using it with r
 - Bcrypt password hashes (cost 12 for new passwords) with history checks against the last
   five passwords.
 - Server-generated captcha on the login form and a 60-second lockout after five failures.
+- Layered request limits on the whole API, tightened on sign-in, the password workflow,
+  administrative writes, uploads and downloads, and the wide reports (`server/_core/rateLimits.ts`).
+  Blocked callers receive HTTP 429 with the wait time in the `Retry-After` header.
 - Signed JWT session cookies (7 days) and bearer tokens for REST calls (8 hours).
 - Role checks on every management endpoint, with audit logging of administrative actions.
 - Support attachments are only downloadable through an authenticated administrator route.

@@ -1,6 +1,7 @@
 import { COOKIE_NAME } from "@shared/const";
 import type { Express, Request, Response } from "express";
 import * as db from "../db";
+import { authLimiter } from "./rateLimits";
 import { sdk } from "./sdk";
 
 function getQueryParam(req: Request, key: string): string | undefined {
@@ -9,8 +10,11 @@ function getQueryParam(req: Request, key: string): string | undefined {
 }
 
 export function registerOAuthRoutes(app: Express) {
-  // Local login endpoint for username/password authentication
-  app.post("/api/auth/login", async (req: Request, res: Response) => {
+  // Local login endpoint for username/password authentication.
+  // authLimiter is the shared sign-in bucket: this route also issues the
+  // session cookie, so it is the same credential-guessing target as
+  // POST /api/login and must not get its own fresh budget.
+  app.post("/api/auth/login", authLimiter, async (req: Request, res: Response) => {
     const { username, password } = req.body;
 
     if (!username || !password) {

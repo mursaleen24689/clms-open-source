@@ -121,3 +121,35 @@ characters and the account is forced to change it at first sign-in.
 
 Errors use `{ "error": "message" }` with an appropriate status code (400, 401, 403, 404,
 409 or 500). Audit-relevant actions are written to the `audit_logs` table.
+
+## Rate limiting
+
+Every path under `/api` - REST and tRPC alike - is limited per client address, with
+tighter allowances on the routes that are expensive or worth abusing:
+
+| Area | Routes | Allowance |
+| --- | --- | --- |
+| Everything under `/api` | all of the below included | 600 requests / minute |
+| Ordinary reads | `user-details`, `my-leaves`, `notifications`, `supervisors`, `memos` (GET), `admin/pending-leaves`, `admin/holidays`, `/api/trpc/*` | 300 requests / minute |
+| Sign-in and session | `POST /api/login`, `POST /api/auth/login` | 10 rejected attempts / 15 minutes |
+| Captcha | `GET /api/captcha` | 60 / 5 minutes |
+| Password workflow | `POST /api/forgot-password`, `POST /api/update-password` | 5 / hour |
+| Administrative writes | accounts, balances, roles, supervisors, holidays, quota reset, profile and ticket decisions, `admin/users/:id/reset-password` | 90 / 5 minutes |
+| Leave writes | `submit-leave`, `admin/leave-action/:id`, `DELETE my-leaves/:id` | 120 / 5 minutes |
+| Uploads | `POST /api/support`, `POST /api/profile-update` | 30 / 10 minutes |
+| Downloads | `GET /api/admin/support/:id/attachment` | 60 / 10 minutes |
+| Wide reports | `admin/employees-detailed`, `admin/support`, `admin/profile-requests`, `admin/employee-records/:id` | 30 / minute |
+| Memos | `POST`, `PUT`, `DELETE /api/memos` | 40 / 10 minutes |
+
+A caller over the limit gets `429 Too Many Requests` with the usual error shape, so
+existing clients show it without changes:
+
+```json
+{ "error": "Too many requests to signing in from this computer. Please wait a moment and try again." }
+```
+
+The remaining allowance and the wait are also sent as the `RateLimit` and
+`RateLimit-Policy` response headers, plus `Retry-After` on the refused request; the
+legacy `X-RateLimit-*` headers are not used (`standardHeaders: "draft-7"`,
+`legacyHeaders: false`). Counts are per address, so a deployment behind a reverse proxy must set
+`TRUSTED_PROXY_HOPS` (see `INSTALL.md`), otherwise all staff share one allowance.

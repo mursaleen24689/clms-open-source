@@ -14,6 +14,19 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import {
+  adminWriteLimiter,
+  apiLimiter,
+  authLimiter,
+  captchaLimiter,
+  downloadLimiter,
+  leaveWriteLimiter,
+  memoWriteLimiter,
+  passwordLimiter,
+  readLimiter,
+  reportLimiter,
+  uploadLimiter,
+} from "./rateLimits";
 
 // 1. Database Connection Configuration (Reads from DATABASE_URL if provided, with XAMPP defaults)
 const parseDbUrl = () => {
@@ -48,15 +61,46 @@ const allowedIpPrefixes = (process.env.ALLOWED_IP_PREFIXES ?? "")
 const IP_WHITELIST_ENABLED = allowedIpPrefixes.length > 0;
 const allowedSubnets = [...allowedIpPrefixes, "127.0.0.1", "::1"];
 
+// The client address used by the audit log, the optional IP whitelist below and
+// the login lockout. It is read from `req.ip` and not from the raw
+// `X-Forwarded-For` header on purpose: `req.ip` is what Express produces once
+// `trust proxy` has been set to the real number of proxy hops (see
+// configureTrustProxy), so a caller cannot pick its own address by prepending a
+// value to that header. Reading the first `X-Forwarded-For` entry instead would
+// hand an attacker a fresh bucket - and a fresh audit-log identity - on every
+// request, and it would not match the key the limiters in `rateLimits.ts` use.
 const getClientIp = (req: express.Request) => {
-  // Only trust X-Forwarded-For if Express trust proxy is enabled
-  let ip = (req.app.get('trust proxy') && typeof req.headers['x-forwarded-for'] === 'string')
-    ? req.headers['x-forwarded-for'].split(',')[0].trim()
-    : req.socket.remoteAddress;
+  let ip = req.ip || req.socket.remoteAddress;
   if (ip && ip.startsWith('::ffff:')) {
     ip = ip.substring(7);
   }
+  // "Unknown IP" is a label for the log line only. It must never be used as a
+  // rate-limit key: every request with an unresolvable address would land in
+  // one shared bucket, so a single client could lock out the whole site.
   return ip?.trim() || 'Unknown IP';
+};
+
+// --- PROXY CONFIGURATION FOR THE RATE LIMITERS ---
+// The limiters in `rateLimits.ts` count per client address. Node learns the
+// address of the visitor from the socket, which is correct for the deployment
+// described in INSTALL.md (Node listens directly on the LAN, browsers connect
+// to port 3000). If this server is ever put behind a reverse proxy such as
+// nginx, Caddy or IIS ARR, the socket only ever shows the proxy, so every user
+// in the building would share one bucket and one person could exhaust the
+// strict limits for everybody. In that case the administrator must set
+// TRUSTED_PROXY_HOPS in `.env` to the number of proxy hops between the browser
+// and Node (1 for a single proxy on the same machine, 2 for e.g. CDN + proxy).
+// Never set it to `true`: that trusts whatever the client claims and is a
+// trivial way around IP-based rate limiting - express-rate-limit refuses to run
+// in that mode as well.
+const configureTrustProxy = (app: express.Express) => {
+  const raw = (process.env.TRUSTED_PROXY_HOPS ?? "").trim();
+  if (!raw) return; // direct LAN deployment: the socket address is the client
+  if (!/^[1-9]\d*$/.test(raw)) {
+    throw new Error("TRUSTED_PROXY_HOPS must be a whole number of proxy hops of 1 or more, or left unset.");
+  }
+  app.set("trust proxy", Number.parseInt(raw, 10));
+  console.log(`[SECURITY] Reverse proxy mode: trusting ${raw} hop(s) of X-Forwarded-For for client addresses.`);
 };
 
 const isAllowedIp = (ip: string) => {
@@ -77,6 +121,12 @@ const isIsoCalendarDate = (value: unknown): value is string => {
 };
 
 // SECURITY FIX: Simple, memory-efficient login rate limiter
+// This is the failure lockout (five rejected passwords from one address, then a
+// one-minute pause). The volume ceiling for the same routes is `authLimiter` in
+// `rateLimits.ts`. Keep both: this one reacts to guesses quickly and can lock a
+// client out mid-window, that one caps raw request volume and publishes the
+// standard RateLimit-* headers. Both key on the same client address, because
+// getClientIp reads req.ip.
 const loginAttemptsTracker = new Map<string, { count: number; lockUntil: number; lastAttempt: number }>();
 const loginRateLimiter = (req: express.Request, res: express.Response, next: express.NextFunction) => {
   const ip = getClientIp(req);
@@ -299,6 +349,16 @@ const schedulePeriodicBackup = () => {
 async function startServer() {
   const app = express();
   const server = createServer(app);
+
+  // Must happen before anything reads req.ip, i.e. before the first route and
+  // before the limiters are mounted.
+  configureTrustProxy(app);
+
+  // SECURITY: the general ceiling for every API route, including /api/trpc.
+  // Registered first so that it also covers the routes mounted below. Static
+  // files and the browser bundle are deliberately not limited - throttling the
+  // page itself would only frustrate staff on shared workstations.
+  app.use("/api", apiLimiter);
   
   // SECURITY FIX: Robust Connection Pool
   const db = mysql.createPool({
@@ -314,7 +374,7 @@ async function startServer() {
   if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir);
 
   // Support attachments are only served through an authenticated admin route.
-  app.get('/api/admin/support/:id/attachment', authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.get('/api/admin/support/:id/attachment', downloadLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     try {
       const [rows]: any = await db.execute("SELECT attachment_path, attachment_name FROM support_tickets WHERE id = ?", [req.params.id]);
       if (!rows.length || !rows[0].attachment_path) return res.status(404).json({ error: "Attachment not found." });
@@ -415,7 +475,7 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
   // SECURITY: server-verified login captcha challenge
-  app.get("/api/captcha", (_req, res) => {
+  app.get("/api/captcha", captchaLimiter, (_req, res) => {
     res.json(buildCaptcha());
   });
   
@@ -436,7 +496,7 @@ async function startServer() {
   // --- REST API ENDPOINTS ---
 
   // 1. Secure Login Endpoint (SECURITY FIX: Implemented Bcrypt with Silent Upgrade and Rate Limiting)
-  app.post("/api/login", loginRateLimiter, async (req, res) => {
+  app.post("/api/login", authLimiter, loginRateLimiter, async (req, res) => {
     const { username, password, captcha_id, captcha_answer } = req.body;
     const captcha = verifyCaptcha(captcha_id, captcha_answer);
     if (!captcha.ok) {
@@ -511,7 +571,7 @@ async function startServer() {
   });
 
   // 2. Forgot Password Reset Endpoint (IT Approval Workflow)
-  app.post("/api/forgot-password", async (req, res) => {
+  app.post("/api/forgot-password", passwordLimiter, async (req, res) => {
     const { username, persNo } = req.body;
     try {
       const [rows]: any = await db.execute(
@@ -543,7 +603,7 @@ async function startServer() {
   });
 
   // 3. User Details
-  app.get("/api/user-details", authenticateToken, async (req, res) => {
+  app.get("/api/user-details", readLimiter, authenticateToken, async (req, res) => {
     const caller = (req as any).user;
     const requestedUsername = typeof req.query.username === 'string' ? req.query.username : caller?.username;
     
@@ -585,7 +645,7 @@ async function startServer() {
   });
 
   // 4. Submit Leave Request with MULTI-LEVEL ROUTING Integration
-  app.post("/api/submit-leave", authenticateToken, async (req, res) => {
+  app.post("/api/submit-leave", leaveWriteLimiter, authenticateToken, async (req, res) => {
     const caller = (req as any).user;
     const { startDate, endDate, numberOfDays, reason } = req.body; 
 
@@ -647,7 +707,7 @@ async function startServer() {
   });
 
   // 5. Get Pending Leaves (Includes pending_supervisor records for the same portal)
-  app.get("/api/admin/pending-leaves", authenticateToken, requireRole(['hod', 'admin', 'clerk', 'pa']), async (req, res) => {
+  app.get("/api/admin/pending-leaves", readLimiter, authenticateToken, requireRole(['hod', 'admin', 'clerk', 'pa']), async (req, res) => {
     try {
       const [rows]: any = await db.execute(`
         SELECT la.id, u.name, la.startDate as date, la.endDate, la.reason, la.numberOfDays, la.status, u.supervisor_id 
@@ -658,7 +718,7 @@ async function startServer() {
   });
 
   // 6. Action Leave (Approve/Reject/Recommend Supervisor Step)
-  app.post("/api/admin/leave-action/:id", authenticateToken, async (req, res) => {
+  app.post("/api/admin/leave-action/:id", leaveWriteLimiter, authenticateToken, async (req, res) => {
     const { status, remarks, isCompensated = false } = req.body; 
     const caller = (req as any).user;
     const actionBy = caller?.name || caller?.username || "Management";
@@ -738,7 +798,7 @@ async function startServer() {
   });
 
   // 7. Update Password internally 
-  app.post("/api/update-password", authenticateToken, async (req, res) => {
+  app.post("/api/update-password", passwordLimiter, authenticateToken, async (req, res) => {
     try {
       const caller = (req as any).user;
       const targetUsername = caller?.role === 'admin' ? (req.body.username || caller.username) : caller?.username;
@@ -769,7 +829,7 @@ async function startServer() {
   });
 
   // 8. Get Employee's Leave History 
-  app.get("/api/my-leaves", authenticateToken, async (req, res) => {
+  app.get("/api/my-leaves", readLimiter, authenticateToken, async (req, res) => {
     try {
       const caller = (req as any).user;
       const requestedUsername = typeof req.query.username === 'string' ? req.query.username : caller?.username;
@@ -788,7 +848,7 @@ async function startServer() {
   });
 
   // 9. Fetching Detailed Employees includes Supervisor ID
-  app.get("/api/admin/employees-detailed", authenticateToken, requireRole(['hod', 'admin', 'clerk', 'pa']), async (req, res) => {
+  app.get("/api/admin/employees-detailed", reportLimiter, authenticateToken, requireRole(['hod', 'admin', 'clerk', 'pa']), async (req, res) => {
     try {
       const [employees]: any = await db.execute(`
         SELECT 
@@ -826,7 +886,7 @@ async function startServer() {
   });
 
   // 10. Get Employee Record 
-  app.get("/api/admin/employee-records/:id", authenticateToken, requireRole(['hod', 'admin', 'clerk']), async (req, res) => {
+  app.get("/api/admin/employee-records/:id", reportLimiter, authenticateToken, requireRole(['hod', 'admin', 'clerk']), async (req, res) => {
     try {
       const [leaves]: any = await db.execute("SELECT * FROM leaveapplications WHERE employeeId = ? ORDER BY createdAt DESC", [req.params.id]);
       const [balance]: any = await db.execute("SELECT * FROM leavebalances WHERE employeeId = ?", [req.params.id]);
@@ -835,7 +895,7 @@ async function startServer() {
   });
 
   // 11. Yearly Quota Reset 
-  app.post("/api/admin/reset-yearly-quota", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.post("/api/admin/reset-yearly-quota", adminWriteLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     try {
       await db.execute("UPDATE leavebalances SET remaining = 25, used = 0");
       await db.execute("INSERT INTO audit_logs (user_name, action, target, ip_address) VALUES (?, ?, ?, ?)", [((req as any).user?.name || (req as any).user?.username), 'YEAR_END_RESET', 'All Balances', getClientIp(req)]);
@@ -844,7 +904,7 @@ async function startServer() {
   });
 
   // 12. Create User 
-  app.post("/api/admin/users", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.post("/api/admin/users", adminWriteLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     const { name, username, password, role, designation, persNo, bps, employeeId } = req.body;
     if (typeof name !== 'string' || !name.trim() || typeof username !== 'string' || !/^[A-Za-z0-9._-]{2,64}$/.test(username) ||
         typeof password !== 'string' || password.length < 12 || !['employee', 'hod', 'admin', 'clerk', 'pa'].includes(role)) {
@@ -880,7 +940,7 @@ async function startServer() {
   });
 
   // 13. Update Balance Manually 
-  app.put("/api/admin/users/:id/balance", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.put("/api/admin/users/:id/balance", adminWriteLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     try {
       await db.execute("UPDATE leavebalances SET remaining = ? WHERE employeeId = ?", [req.body.balance, req.params.id]);
       await db.execute("INSERT INTO audit_logs (user_name, action, target, ip_address) VALUES (?, ?, ?, ?)", [((req as any).user?.name || (req as any).user?.username), 'UPDATE_BALANCE', `Emp #${req.params.id}`, getClientIp(req)]);
@@ -889,7 +949,7 @@ async function startServer() {
   });
 
   // 14. Delete User 
-  app.delete("/api/admin/users/:id", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.delete("/api/admin/users/:id", adminWriteLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     try {
       await db.execute("DELETE FROM leavebalances WHERE employeeId = ?", [req.params.id]);
       await db.execute("DELETE FROM leaveapplications WHERE employeeId = ?", [req.params.id]);
@@ -900,7 +960,7 @@ async function startServer() {
   });
 
   // 15. Fetch Holidays 
-  app.get("/api/admin/holidays", authenticateToken, async (req, res) => {
+  app.get("/api/admin/holidays", readLimiter, authenticateToken, async (req, res) => {
     try {
       const [rows] = await db.execute("SELECT * FROM public_holidays ORDER BY date ASC");
       res.json(rows);
@@ -908,7 +968,7 @@ async function startServer() {
   });
 
   // 16. Add Holiday 
-  app.post("/api/admin/holidays", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.post("/api/admin/holidays", adminWriteLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     try {
       await db.execute("INSERT INTO public_holidays (name, date) VALUES (?, ?)", [req.body.name, req.body.date]);
       await db.execute("INSERT INTO audit_logs (user_name, action, target, ip_address) VALUES (?, ?, ?, ?)", [((req as any).user?.name || (req as any).user?.username), 'ADD_HOLIDAY', req.body.name, getClientIp(req)]);
@@ -917,7 +977,7 @@ async function startServer() {
   });
 
   // 17. Delete Holiday 
-  app.delete("/api/admin/holidays/:id", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.delete("/api/admin/holidays/:id", adminWriteLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     try {
       await db.execute("DELETE FROM public_holidays WHERE id = ?", [req.params.id]);
       await db.execute("INSERT INTO audit_logs (user_name, action, target, ip_address) VALUES (?, ?, ?, ?)", [((req as any).user?.name || (req as any).user?.username), 'DELETE_HOLIDAY', `ID #${req.params.id}`, getClientIp(req)]);
@@ -926,7 +986,7 @@ async function startServer() {
   });
 
   // 18. Withdraw Pending Leave (Includes pending_supervisor state check)
-  app.delete("/api/my-leaves/:id", authenticateToken, async (req, res) => {
+  app.delete("/api/my-leaves/:id", leaveWriteLimiter, authenticateToken, async (req, res) => {
     try {
       const caller = (req as any).user;
       const [leaveRows]: any = await db.execute(
@@ -945,7 +1005,7 @@ async function startServer() {
   });
 
   // 19. Delegate Acting HOD 
-  app.put("/api/admin/users/:id/delegate", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.put("/api/admin/users/:id/delegate", adminWriteLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     try {
       await db.execute("UPDATE users SET role = ? WHERE id = ?", [req.body.isDelegating ? 'hod' : 'employee', req.params.id]);
       res.json({ success: true, message: `User role upgraded/downgraded successfully` });
@@ -953,7 +1013,7 @@ async function startServer() {
   });
 
   // 20. Submit Support Ticket
-  app.post("/api/support", authenticateToken, async (req, res) => {
+  app.post("/api/support", uploadLimiter, authenticateToken, async (req, res) => {
     const caller = (req as any).user;
     const username = caller?.username || req.body.username;
     const { subject, message, fileName, fileBase64 } = req.body;
@@ -984,7 +1044,7 @@ async function startServer() {
   });
 
   // 21. Fetch Help Desk Tickets (Admin)
-  app.get("/api/admin/support", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.get("/api/admin/support", reportLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     try {
       const [rows] = await db.execute("SELECT * FROM support_tickets ORDER BY created_at DESC");
       res.json(rows);
@@ -992,7 +1052,7 @@ async function startServer() {
   });
 
   // 22. Resolve Help Desk Ticket (Admin)
-  app.put("/api/admin/support/:id/resolve", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.put("/api/admin/support/:id/resolve", adminWriteLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     try {
       await db.execute("UPDATE support_tickets SET status = 'resolved' WHERE id = ?", [req.params.id]);
       res.json({ success: true });
@@ -1000,7 +1060,7 @@ async function startServer() {
   });
 
   // 23. Submit Profile Update Request
-  app.post("/api/profile-update", authenticateToken, async (req, res) => {
+  app.post("/api/profile-update", uploadLimiter, authenticateToken, async (req, res) => {
     const caller = (req as any).user;
     const { name, designation, persNo, bps, phone, email, profilePicBase64 } = req.body;
     const username = caller.username;
@@ -1017,7 +1077,7 @@ async function startServer() {
   });
 
   // 24. Fetch Pending Profile Requests (Admin)
-  app.get("/api/admin/profile-requests", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.get("/api/admin/profile-requests", reportLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     try {
       const [rows] = await db.execute("SELECT * FROM profile_requests ORDER BY created_at DESC");
       res.json(rows);
@@ -1025,7 +1085,7 @@ async function startServer() {
   });
 
   // 25. Approve or Reject Profile Request (Admin)
-  app.put("/api/admin/profile-requests/:id/:action", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.put("/api/admin/profile-requests/:id/:action", adminWriteLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     const { id, action } = req.params;
     const { rejectReason } = req.body; 
     try {
@@ -1048,7 +1108,7 @@ async function startServer() {
   });
 
   // 26. UPDATED NOTIFICATION ENGINE
-  app.get("/api/notifications", authenticateToken, async (req, res) => {
+  app.get("/api/notifications", readLimiter, authenticateToken, async (req, res) => {
     const userRole = (req as any).user.role;
     const username = (req as any).user.username;
     
@@ -1101,7 +1161,7 @@ async function startServer() {
   });
 
   // 27. ADMINISTRATIVE PASSWORD RESET OVERRIDE ENDPOINT
-  app.put("/api/admin/users/:id/reset-password", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.put("/api/admin/users/:id/reset-password", adminWriteLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
       const { tempPassword } = req.body;
     const targetUserId = req.params.id;
 
@@ -1143,7 +1203,7 @@ async function startServer() {
 
   // 28. Fetch supervisors using designation-based hierarchy
   // Supervisors = hod/admin roles OR designation matches senior faculty/management keywords
-  app.get("/api/supervisors", authenticateToken, async (req, res) => {
+  app.get("/api/supervisors", readLimiter, authenticateToken, async (req, res) => {
     try {
       const [rows] = await db.execute(`
         SELECT id, name, designation, role 
@@ -1180,7 +1240,7 @@ async function startServer() {
   });
 
   // 29. Admin action mapping: Link an employee to a specific supervisor_id
-  app.put("/api/admin/users/:id/assign-supervisor", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.put("/api/admin/users/:id/assign-supervisor", adminWriteLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     const targetUserId = req.params.id;
     const { supervisor_id } = req.body; 
     try {
@@ -1195,7 +1255,7 @@ async function startServer() {
   });
 
   // ADMIN: Toggle is_supervisor flag on any user (UI-configurable)
-  app.put("/api/admin/users/:id/toggle-supervisor", authenticateToken, requireRole(['admin']), async (req, res) => {
+  app.put("/api/admin/users/:id/toggle-supervisor", adminWriteLimiter, authenticateToken, requireRole(['admin']), async (req, res) => {
     const { id } = req.params;
     const { is_supervisor } = req.body; // true or false
     try {
@@ -1214,7 +1274,7 @@ async function startServer() {
   // ═══════════════════════════════════════════════════
 
   // GET: Fetch all memos for logged-in user (with optional search)
-  app.get("/api/memos", authenticateToken, async (req, res) => {
+  app.get("/api/memos", readLimiter, authenticateToken, async (req, res) => {
     const caller = (req as any).user;
     const requestedUsername = typeof req.query.username === 'string' ? req.query.username : caller?.username;
     if (!['admin', 'hod'].includes(caller?.role) && caller?.username !== requestedUsername) {
@@ -1243,7 +1303,7 @@ async function startServer() {
   });
 
   // POST: Create new memo
-  app.post("/api/memos", authenticateToken, async (req, res) => {
+  app.post("/api/memos", memoWriteLimiter, authenticateToken, async (req, res) => {
     const caller = (req as any).user;
     const username = caller?.username || req.body.username;
     const {
@@ -1283,7 +1343,7 @@ async function startServer() {
   });
 
   // PUT: Update existing memo (owner only)
-  app.put("/api/memos", authenticateToken, async (req, res) => {
+  app.put("/api/memos", memoWriteLimiter, authenticateToken, async (req, res) => {
     const caller = (req as any).user;
     const username = caller?.username || req.body.username;
     const {
@@ -1323,7 +1383,7 @@ async function startServer() {
   });
 
   // DELETE: Remove a memo (owner only)
-  app.delete("/api/memos/:id", authenticateToken, async (req, res) => {
+  app.delete("/api/memos/:id", memoWriteLimiter, authenticateToken, async (req, res) => {
     const { id } = req.params;
     const username = (req as any).user?.username;
     try {
@@ -1343,7 +1403,7 @@ async function startServer() {
 
   // --- END OF REST API ---
 
-  app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
+  app.use("/api/trpc", readLimiter, createExpressMiddleware({ router: appRouter, createContext }));
 
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);
