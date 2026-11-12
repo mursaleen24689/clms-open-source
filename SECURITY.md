@@ -52,6 +52,28 @@ This application is designed for a trusted local network. Before using it with r
 - Role checks on every management endpoint, with audit logging of administrative actions.
 - Support attachments are only downloadable through an authenticated administrator route.
 
+## Controls deliberately not added
+
+Code scanning reports two `js/missing-rate-limiting` findings on the catch-all routes in
+`server/_core/vite.ts`. Both are dismissed as *won't fix*, and the reasoning lives here rather
+than only in the alert, because the reason is a design fact about this application:
+
+- `vite.ts:24` is inside `setupVite`, and `server/_core/index.ts:1408` calls it only when
+  `NODE_ENV` is `development`. A production start takes the `else` branch and serves the built
+  client instead, so this route is not reachable in a deployment. It re-reads and transforms
+  `client/index.html` on every request because that is what hot reload depends on.
+- `vite.ts:64` is the single-page-application history fallback. Any path that is not an API call
+  or a built asset answers with the same `index.html`, which is how a client-side route such as
+  `/leave/12` still loads after a refresh. The response is one static file, identical for every
+  caller, and it is never reached for a path that matches a real asset.
+
+Limiting either route would not slow an attacker in a useful way. It would answer HTTP 429 to
+staff refreshing the page during a busy minute, which is an outage this project would be
+causing itself. The surface that is both expensive and reachable is the API, and that is the one
+carrying limits: `readLimiter` guards `/api/trpc` at `server/_core/index.ts:1406`, with the
+tighter per-route tiers in `server/_core/rateLimits.ts`. That work closed the other 68 findings
+in the same rule.
+
 ## Known limitations
 
 - There is no email delivery, so password reset requests are handled manually by an

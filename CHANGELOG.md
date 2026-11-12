@@ -11,6 +11,19 @@ pull request.
 
 ## [Unreleased]
 
+Prepared by [@mursaleen24689](https://github.com/mursaleen24689) while closing the last two
+CodeScanning (CodeQL) `js/missing-rate-limiting` alerts on this repository.
+
+### Documentation
+
+- `SECURITY.md` has a new "Controls deliberately not added" section. Two alerts remained
+  after 0.1.1, both on a `app.use("*", ...)` route in `server/_core/vite.ts`. Neither is a
+  request an attacker needs to slow down - one is compiled out of a production start, the
+  other is the single-page-app history fallback that returns one static file - and the
+  GitHub alert API stores only a reason code, not an explanation, so the reasoning is
+  written where a reader will find it instead. The alerts are dismissed as *won't fix*
+  against it. ([@mursaleen24689](https://github.com/mursaleen24689))
+
 ## [0.1.1] - 2026-11-05
 
 Prepared by [@mursaleen24689](https://github.com/mursaleen24689) in response to the
